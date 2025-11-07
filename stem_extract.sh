@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# macOS/Linux port of stem_extract.bat
+# macOS/Linux port of stem_extract.bat with recursive directory search
 # Requires: ffmpeg, grep, wc
 
-set -u  # treat unset vars as errors
+set -u  # Treat unset vars as errors
 
 usage() {
   cat <<'EOF'
@@ -17,6 +17,7 @@ Notes:
   - Each file must contain exactly 5 audio tracks.
   - Outputs go into "<basename>.stems" with files:
       "<basename> (Stem 0).mp4" ... "(Stem 4).mp4"
+  - Directory mode now searches subdirectories recursively.
 EOF
 }
 
@@ -42,10 +43,9 @@ process_file() {
   fi
 
   local base_no_ext="${base%.*}"
-  dir="${base_no_ext}.stems"
+  dir="$(dirname "$file")/${base_no_ext}.stems"
 
   # Count audio tracks via ffmpeg stream listing
-  # grep pattern mirrors the Windows findstr regex
   local trackcount
   trackcount="$(ffmpeg -i "$file" 2>&1 \
     | grep -E "Stream #([0-9]+):([0-9]+).*Audio" \
@@ -64,14 +64,13 @@ process_file() {
   echo "Creating directory: \"$dir\""
   mkdir -p -- "$dir"
 
-  # Extract 5 audio tracks (0..4) to separate files
+  # Extract 5 audio tracks (0..4)
   local t num trackfile
   for t in 1 2 3 4 5; do
     num=$((t - 1))
     trackfile="$dir/${base_no_ext} (Stem ${num}).mp4"
     if [[ ! -f "$trackfile" ]]; then
       echo "Extracting track ${num} to \"$trackfile\""
-      # Copy audio stream without re-encoding; drop video/subs if present
       if ! ffmpeg -i "$file" -map 0:a:${num} -c:a copy -vn -sn -y "$trackfile" >/dev/null 2>&1 ; then
         error "Error extracting track ${num} from \"$file\""
       fi
@@ -102,22 +101,17 @@ if [[ "$first" == "/d" || "$first" == "-d" || "$first" == "--dir" ]]; then
     exit 1
   fi
 
-  # Iterate *.mp4 and *.m4a in the directory
-  (
-    cd "$targetdir" || exit 1
-    shopt -s nullglob
-    files=( *.mp4 *.m4a )
-    if [[ ${#files[@]} -eq 0 ]]; then
-      echo "No .mp4 or .m4a files found in \"$targetdir\"."
-      exit 0
-    fi
-    for f in "${files[@]}"; do
-      # Use absolute path to avoid surprises
-      process_file "$PWD/$f"
-    done
-  )
+  # Recursive search for .mp4 and .m4a files
+  mapfile -t files < <(find "$targetdir" -type f \( -iname "*.mp4" -o -iname "*.m4a" \))
+  if [[ ${#files[@]} -eq 0 ]]; then
+    echo "No .mp4 or .m4a files found in \"$targetdir\" or its subdirectories."
+    exit 0
+  fi
+
+  for f in "${files[@]}"; do
+    process_file "$f"
+  done
 else
-  # Treat all arguments as files
   for f in "$@"; do
     process_file "$f"
   done
